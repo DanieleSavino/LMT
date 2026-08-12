@@ -1,0 +1,39 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+
+# --- Virtual environments ---
+.venv/
+venv/
+build_env/
+
+# --- PyInstaller build/packaging output ---
+build/
+dist/
+*.spec.bak
+
+# --- Linux AppImage packaging ---
+AppDir/
+linuxdeploy*.AppImage
+*.AppImage
+
+# --- Windows Inno Setup output ---
+installer_output/
+*.exe
+
+# --- macOS packaging ---
+*.app/
+*.dmg
+
+# --- Test/scratch telemetry data ---
+*.duckdb
+*.duckdb.wal
+*_duckdb.wal
+
+# --- Misc ---
+files.zip
+.DS_Store
+Thumbs.db

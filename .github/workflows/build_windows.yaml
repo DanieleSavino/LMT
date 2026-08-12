@@ -1,0 +1,82 @@
+name: Build Windows
+
+# Builds LMT_Setup.exe (Inno Setup installer) plus a portable zip
+# fallback, and attaches both to a GitHub Release.
+#
+# Triggers:
+#   - push a tag like v1.0.0  -> builds AND publishes to a Release
+#   - manual run (Actions tab -> Run workflow) -> builds + uploads as
+#     a workflow artifact only, no Release (handy for testing the
+#     build itself without cutting a version)
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed to create/attach to a Release
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Freeze with PyInstaller
+        run: pyinstaller lmt.spec --noconfirm
+
+      - name: Sanity-check the frozen exe exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist\LMT\LMT.exe")) {
+            Write-Error "dist\LMT\LMT.exe missing - PyInstaller build failed."
+            exit 1
+          }
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          & $iscc installer.iss
+          if (-not (Test-Path "installer_output\LMT_Setup.exe")) {
+            Write-Error "installer_output\LMT_Setup.exe missing - Inno Setup build failed."
+            exit 1
+          }
+
+      - name: Zip portable build (no-installer fallback)
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\LMT\*" -DestinationPath "LMT-windows-portable.zip"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: LMT-windows
+          path: |
+            installer_output/LMT_Setup.exe
+            LMT-windows-portable.zip
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: LMT ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            installer_output/LMT_Setup.exe
+            LMT-windows-portable.zip

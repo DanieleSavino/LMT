@@ -1,0 +1,78 @@
+name: Build Linux
+
+# Builds LMT-x86_64.AppImage plus a portable tar.gz fallback, and
+# attaches both to a GitHub Release.
+#
+# Triggers:
+#   - push a tag like v1.0.0  -> builds AND publishes to a Release
+#   - manual run (Actions tab -> Run workflow) -> builds + uploads as
+#     a workflow artifact only, no Release
+#
+# Runs on ubuntu-22.04 rather than ubuntu-latest on purpose: AppImages
+# are forward-compatible but not backward-compatible with glibc, so
+# building on an older base image means the result runs on more
+# end-user machines (including ones on older distros/LTS releases).
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget file
+
+      - name: Run build script
+        env:
+          # linuxdeploy ships as an AppImage itself, which normally
+          # needs FUSE to mount-and-run - GitHub's runners don't have
+          # it. This env var makes it extract-and-run instead, which
+          # works everywhere with no extra system packages.
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: |
+          chmod +x build_linux.sh
+          ./build_linux.sh
+
+      - name: Sanity-check the AppImage exists
+        run: |
+          if [ ! -f "LMT-x86_64.AppImage" ]; then
+            echo "::error::LMT-x86_64.AppImage missing - build_linux.sh failed."
+            exit 1
+          fi
+
+      - name: Tar portable build (no-FUSE fallback)
+        run: |
+          tar -czf LMT-linux-portable.tar.gz -C dist LMT
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: LMT-linux
+          path: |
+            LMT-x86_64.AppImage
+            LMT-linux-portable.tar.gz
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: LMT ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            LMT-x86_64.AppImage
+            LMT-linux-portable.tar.gz
