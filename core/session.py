@@ -63,6 +63,8 @@ class TelemetrySession:
 
         self.con = duckdb.connect(str(dest), read_only=False)
         self._freqs: Optional[dict] = None
+        self._units: Optional[dict] = None
+        self._tables: Optional[set] = None
 
     # -- schema ---------------------------------------------------------
     def frequencies(self) -> dict:
@@ -71,11 +73,76 @@ class TelemetrySession:
             self._freqs = {name: freq for name, freq in rows}
         return self._freqs
 
+    def units(self) -> dict:
+        """channelName -> unit string (e.g. 'km/h', 'm/s', '%') for
+        every dense channel, straight from channelsList. Different
+        dense channels are not guaranteed to share units even when
+        they're physically comparable - e.g. a real LMU export has
+        Ground Speed in km/h but Wheel Speed in m/s - so anything
+        comparing two channels numerically (like the lockup/
+        loss-of-traction slip calc) needs to check this first.
+        Returns {} if this file's channelsList has no unit column at
+        all (e.g. older exports or synthetic test data) rather than
+        raising - callers should treat a missing/empty unit as
+        "unknown", not "no conversion needed"."""
+        if self._units is None:
+            cols = {row[0] for row in self.con.execute("DESCRIBE channelsList").fetchall()}
+            if "unit" in cols:
+                rows = self.con.execute("SELECT channelName, unit FROM channelsList").fetchall()
+                self._units = {name: unit for name, unit in rows}
+            else:
+                self._units = {}
+        return self._units
+
+    def table_names(self) -> set:
+        """All table names present in this session's duckdb file (dense
+        channel tables, sparse event tables, and the bookkeeping tables
+        like channelsList/Lap/Lap Time). Used to check whether an
+        optional channel (TC, ABS, Wheel Speed, ...) is present at all
+        before trying to query it - some cars/exports simply don't have
+        every channel."""
+        if self._tables is None:
+            rows = self.con.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+            ).fetchall()
+            self._tables = {name for (name,) in rows}
+        return self._tables
+
+    def has_channel(self, name: str) -> bool:
+        """Whether channel `name` exists in this file at all, dense or
+        sparse - does not say anything about whether it has meaningful
+        (non-empty / non-zero) data for any particular lap."""
+        return name in self.frequencies() or name in self.table_names()
+
     def get_dense_channel(self, name: str, file_t0: float) -> pd.DataFrame:
+        """Single-value view of a dense channel. Most dense channels
+        have one `value` column, but some (Wheel Speed, TyresPressure,
+        Susp Pos, ...) are per-wheel with four columns (`value1..4` =
+        FL/FR/RL/RR, the standard rF2/LMU wheel order) instead - for
+        those, this returns the four-wheel average so generic callers
+        that just want "a number" still get something sane. Callers
+        that need per-wheel resolution (lockup/loss-of-traction) should
+        use get_wheel_channel() instead."""
         freq = self.frequencies()[name]
         df = self.con.execute(f'SELECT * FROM "{name}"').fetchdf().reset_index().rename(columns={"index": "idx"})
         df["ts"] = file_t0 + df["idx"] / freq
+        if "value" in df.columns:
+            return df[["ts", "value"]]
+        wheel_cols = [c for c in ("value1", "value2", "value3", "value4") if c in df.columns]
+        df["value"] = df[wheel_cols].mean(axis=1)
         return df[["ts", "value"]]
+
+    def get_wheel_channel(self, name: str, file_t0: float) -> pd.DataFrame:
+        """Per-wheel view of a dense channel stored as `value1..4`
+        (FL/FR/RL/RR). Raises KeyError if `name` isn't a per-wheel
+        channel - callers should check via has_channel()/a try block,
+        same pattern as the other optional channels."""
+        freq = self.frequencies()[name]
+        df = self.con.execute(f'SELECT * FROM "{name}"').fetchdf().reset_index().rename(columns={"index": "idx"})
+        df["ts"] = file_t0 + df["idx"] / freq
+        return df[["ts", "value1", "value2", "value3", "value4"]].rename(
+            columns={"value1": "fl", "value2": "fr", "value3": "rl", "value4": "rr"}
+        )
 
     def get_sparse_channel(self, name: str) -> pd.DataFrame:
         df = self.con.execute(f'SELECT * FROM "{name}"').fetchdf()
