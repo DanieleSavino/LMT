@@ -17,8 +17,8 @@ long laps.
   your original files are never modified (everything happens on a
   copy in a temp dir).
 - **Watch** a single lap as a dashboard: speed / throttle / brake /
-  RPM / gear stacked and distance-aligned, each channel with its own
-  accent color.
+  TC / ABS / RPM / gear stacked and distance-aligned, each channel
+  with its own accent color.
 - **Compare** two or more laps (from the same file or different
   files): the first lap you check becomes the reference (red) and
   every other lap is overlaid, plus a delta-vs-reference panel, same
@@ -69,6 +69,30 @@ Sessions are duckdb files with:
   column - time is `row_index / frequency`).
 - One table per dense channel (e.g. `"Ground Speed"`, `"Throttle Pos"`,
   `"Brake Pos"`, `"Engine RPM"`, `"Lap Dist"`), each with a `value` column.
-- **Sparse** event tables that only log on change: `"Gear"`, `"Lap"`
-  (lap-boundary markers), `"Lap Time"` (completed lap time, logged at
-  the *next* lap boundary) - each with `(ts, value)` columns.
+- Some dense channels are **per-wheel** instead of a single value:
+  `"Wheel Speed"`, `TyresPressure`, `Susp Pos`, etc. have four columns
+  (`value1..value4` = FL/FR/RL/RR, the standard rF2/LMU wheel order)
+  instead of one `value` column.
+- **Sparse** event tables that only log on change: `"ABS"`, `"Gear"`,
+  `"Lap"` (lap-boundary markers), `"Lap Time"` (completed lap time,
+  logged at the *next* lap boundary) - each with `(ts, value)`
+  columns. `"TC"` is dense (one row per sample, single `value`
+  column), not sparse - don't assume every on/off-style channel uses
+  the sparse encoding.
+- **Lockup** and **loss-of-traction** aren't LMU channels at all -
+  they're derived from a per-wheel slip comparison between `"Wheel
+  Speed"` and `"Ground Speed"` (see `core/lapdata.py`). Lockup is only
+  flagged where ABS isn't currently active (a slip dip during active
+  ABS is the system working, not a lockup), and only shown in the UI
+  when the ABS panel isn't (i.e. for cars without a working ABS
+  system). Both are skipped gracefully if the export has no `"Wheel
+  Speed"` channel.
+- Every panel is plotted against **distance**, not time - resampled
+  onto a common `"Lap Dist"`-derived grid. A spin, stall, or off-track
+  recovery that covers almost no net distance over real seconds has
+  no room on that axis: the resampled channels through it are a
+  straight interpolation between "before" and "after", so lockup/
+  wheelspin *during* such an event usually won't show up as flagged,
+  even if it genuinely happened. Those stretches are marked via
+  `LapData.gap` and shaded in the UI so a flat trace there reads as
+  "can't be shown on this axis", not "nothing happened".
